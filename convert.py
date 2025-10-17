@@ -18,7 +18,7 @@ TEXT_SUB_CODECS = {
 
 BITMAP_SUB_CODECS = {
     "hdmv_pgs_subtitle",  # PGS .sup (common on Blu-ray/WEB)
-    "dvd_subtitle",       # VobSub (idx/sub)
+    "dvd_subtitle",  # VobSub (idx/sub)
 }
 
 
@@ -28,20 +28,29 @@ def run_cmd(cmd: List[str], silent: bool = False):
         if not isinstance(cmd, list):
             raise TypeError("cmd must be a list of strings")
         if silent:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
         else:
             subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        print(f"Error running command: {' '.join(shlex.quote(c) for c in cmd)}", file=sys.stderr)
+        print(
+            f"Error running command: {' '.join(shlex.quote(c) for c in cmd)}",
+            file=sys.stderr,
+        )
         sys.exit(e.returncode)
 
 
 def ffprobe_streams(infile: str) -> List[dict]:
     cmd = [
-        "ffprobe", "-v", "error",
-        "-print_format", "json",
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
         "-show_streams",
-        "-select_streams", "s",
+        "-select_streams",
+        "s",
         infile,
     ]
     try:
@@ -64,7 +73,9 @@ def title_contains_forced(title: Optional[str]) -> bool:
     if not title:
         return False
     t = title.lower()
-    return any(k in t for k in ["forced", "signs", "songs & signs", "songs/signs"])  # common labels
+    return any(
+        k in t for k in ["forced", "signs", "songs & signs", "songs/signs"]
+    )  # common labels
 
 
 def title_prefers_full(title: Optional[str]) -> int:
@@ -130,29 +141,64 @@ def pick_best_jpn_text_sub(infile: str) -> Tuple[Optional[int], str]:
         return (base, -idx, -forced)
 
     # Among text subs, attempt to filter out 'forced' labeled when a non-forced exists
-    non_forced_text = [s for s in text_jpn if int((s.get("disposition", {}) or {}).get("forced", 0)) == 0 and not title_contains_forced((s.get("tags", {}) or {}).get("title"))]
+    non_forced_text = [
+        s
+        for s in text_jpn
+        if int((s.get("disposition", {}) or {}).get("forced", 0)) == 0
+        and not title_contains_forced((s.get("tags", {}) or {}).get("title"))
+    ]
     pool = non_forced_text if non_forced_text else text_jpn
 
     best = sorted(pool, key=score_stream, reverse=True)[0]
     return int(best.get("index")), "Selected Japanese full text subtitles"
 
 
+def find_external_sub(infile: str) -> Optional[str]:
+    """Check if an external subtitle file exists next to the video."""
+    base, _ = os.path.splitext(infile)
+    candidates = [
+        f"{base}.ja.srt",
+        f"{base}.jpn.srt",
+        f"{base}.jp.srt",
+        f"{base}.srt",
+        f"{base}.ass",
+        f"{base}.ssa",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
 def extract_subs(infile: str, tmp_srt: str, clean_only: bool):
     idx, reason = pick_best_jpn_text_sub(infile)
     if idx is None:
-        print(f" ! Skipping: {reason}")
-        # Ensure we exit with error to signal nothing to embed
-        sys.exit(1)
+        # Try to find an external subtitle file
+        ext_sub = find_external_sub(infile)
+        if ext_sub:
+            print(f" • Using external subtitle file: {ext_sub}")
+            # Copy to tmp_srt so later cleaning logic works the same
+            run_cmd(["cp", ext_sub, tmp_srt])
+            return
+        else:
+            print(f" ! Skipping: {reason} (no external subs found)")
+            sys.exit(1)
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", infile,
-        "-map", f"0:{idx}",  # map the exact ffmpeg stream index
-        "-c:s", "srt",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        infile,
+        "-map",
+        f"0:{idx}",  # map the exact ffmpeg stream index
+        "-c:s",
+        "srt",
         tmp_srt,
     ]
     if not clean_only:
-        # add stats just after -loglevel error
         cmd.insert(4, "-stats")
     run_cmd(cmd, silent=clean_only)
 
@@ -167,12 +213,34 @@ def clean_srt(tmp_srt: str, clean_srt: str):
 
 def embed_subs(infile: str, clean_srt: str, out_mp4: str):
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-stats",
-        "-i", infile, "-i", clean_srt,
-        "-map", "0:v", "-map", "0:a", "-map", "1:s",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-c:s", "mov_text", "-metadata:s:s:0", "language=jpn",
-        "-movflags", "+faststart", out_mp4,
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-stats",
+        "-i",
+        infile,
+        "-i",
+        clean_srt,
+        "-map",
+        "0:v",
+        "-map",
+        "0:a",
+        "-map",
+        "1:s",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-c:s",
+        "mov_text",
+        "-metadata:s:s:0",
+        "language=jpn",
+        "-movflags",
+        "+faststart",
+        out_mp4,
     ]
     run_cmd(cmd)
 
@@ -186,9 +254,7 @@ def main():
         action="store_true",
         help="Only extract and clean the SRT, skip embedding",
     )
-    parser.add_argument(
-        "patterns", nargs="+", help="MKV files or glob patterns"
-    )
+    parser.add_argument("patterns", nargs="+", help="MKV files or glob patterns")
     args = parser.parse_args()
 
     # Expand glob patterns
